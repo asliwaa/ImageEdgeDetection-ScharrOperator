@@ -1,2 +1,2 @@
 extern "C" __declspec(dllexport)
-void ApplyScharrOperator(unsigned char* imageData, int width, int height, int stride);
+void ApplyScharrOperatorCpp(unsigned char* inputData, unsigned char* outputData, int width, int height, int stride);

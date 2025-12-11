@@ -10,12 +10,13 @@ namespace EdgeDetectionApp
 {
     public partial class MainWindow : Window
     {
-        // Import funkcji z DLL w C++
-        [DllImport("EdgeDetectionCPP.dll", CallingConvention = CallingConvention.Cdecl)]
-        public static extern void ApplyScharrOperator(IntPtr imageData, int width, int height, int stride);
+        // DllImport dla C++
+        [DllImport("EdgeDetectionCPP.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "ApplyScharrOperatorCpp")]
+        public static extern void ApplyScharrOperatorCpp(IntPtr inputPtr, IntPtr outputPtr, int width, int height, int stride);
 
-        //Zmienna, która będzie przechowywać zmienione wartości pikseli oryginalnego obrazu, zainicjalizowana jako pusta zmienna
-        private WriteableBitmap? processingBitmap;
+        // DllImport dla ASM (zauważ nową nazwę DLL i funkcji)
+        [DllImport("EdgeDetectionASM.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "ApplyScharrOperatorAsm")]
+        public static extern void ApplyScharrOperatorAsm(IntPtr inputPtr, IntPtr outputPtr, int width, int height, int stride);
 
         public MainWindow()
         {
@@ -38,7 +39,6 @@ namespace EdgeDetectionApp
 
                 //Czyszczenie klasy image i zmiennej przechowującej przetworzony obraz (konieczne zwłaszcza jeżeli wcześniej już przetwarzaliśmy jakiś obraz)
                 imgConverted.Source = null;
-                processingBitmap = null;
 
                 //Aktywacja przycisków wyboru biblioteki DLL
                 rdBtnCpp.IsEnabled = true;
@@ -52,46 +52,80 @@ namespace EdgeDetectionApp
         //Metoda obsługująca logikę działania przycisku uruchomienia przetwarzania obrazu
         private void btnRun_Click(object sender, RoutedEventArgs e)
         {
-            if (rdBtnCpp.IsChecked == true)
-            {
-                RunCppAlgorithm();
-            }
-            else if (rdBtnAsm.IsChecked == true)
-            { 
-                MessageBox.Show("ASM not implemented yet.");
-            }
+            if (rdBtnCpp.IsChecked == true) RunAlgorithm(false); // C++
+            else if (rdBtnAsm.IsChecked == true) RunAlgorithm(true); // ASM
         }
 
         //Metoda obsługująca logikę przesłania obrazu do DLL w C++, odebrania przetworzonych danych i wyświetlenia gotowego obrazu
-        private void RunCppAlgorithm()
+        private void RunAlgorithm(bool useAsm)
         {
             if (imgUploaded.Source is not BitmapImage originalImage) return;
 
-            // Tworzymy kopię roboczą ze świeżego oryginału
+            // 1. Przygotowanie WEJŚCIA (Input)
+            // Konwertujemy oryginał na Bgr24
             FormatConvertedBitmap converter = new FormatConvertedBitmap();
             converter.BeginInit();
             converter.Source = originalImage;
             converter.DestinationFormat = PixelFormats.Bgr24;
             converter.EndInit();
 
-            processingBitmap = new WriteableBitmap(converter);
+            // InputBitmap - z tego czytamy
+            WriteableBitmap inputBitmap = new WriteableBitmap(converter);
 
-            // Blokada pamięci
-            processingBitmap.Lock();
+            // 2. Przygotowanie WYJŚCIA (Output)
+            // Tworzymy pustą bitmapę o tych samych wymiarach
+            WriteableBitmap outputBitmap = new WriteableBitmap(
+                inputBitmap.PixelWidth,
+                inputBitmap.PixelHeight,
+                inputBitmap.DpiX,
+                inputBitmap.DpiY,
+                PixelFormats.Bgr24,
+                null); // null = pusta
 
-            // Wywołanie C++
+            // 3. Blokada pamięci obu obrazów
+            inputBitmap.Lock();
+            outputBitmap.Lock();
+
+            // Dane do przekazania
+            IntPtr inPtr = inputBitmap.BackBuffer;
+            IntPtr outPtr = outputBitmap.BackBuffer;
+            int w = inputBitmap.PixelWidth;
+            int h = inputBitmap.PixelHeight;
+            int stride = inputBitmap.BackBufferStride;
+
+            // 4. Wykonanie (Mierzymy czas)
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            ApplyScharrOperator(processingBitmap.BackBuffer, processingBitmap.PixelWidth, processingBitmap.PixelHeight, processingBitmap.BackBufferStride);
+
+            if (useAsm)
+            {
+                try
+                {
+                    ApplyScharrOperatorAsm(inPtr, outPtr, w, h, stride);
+                }
+                catch (DllNotFoundException)
+                {
+                    MessageBox.Show("Nie znaleziono pliku EdgeDetectionASM.dll!");
+                }
+            }
+            else
+            {
+                ApplyScharrOperatorCpp(inPtr, outPtr, w, h, stride);
+            }
+
             watch.Stop();
 
-            // Odblokowanie
-            processingBitmap.AddDirtyRect(new Int32Rect(0, 0, processingBitmap.PixelWidth, processingBitmap.PixelHeight));
-            processingBitmap.Unlock();
+            // 5. Sprzątanie
+            // Oznaczamy output jako zmieniony, żeby WPF go odświeżył
+            outputBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
+            inputBitmap.Unlock();
+            outputBitmap.Unlock();
 
-            // Wyświetlenie wyniku
-            imgConverted.Source = processingBitmap;
+            // Przypisanie wyniku
+            imgConverted.Source = outputBitmap;
 
-            MessageBox.Show($"Czas wykonania C++: {watch.ElapsedMilliseconds} ms");
+            // Informacja o czasie
+            string lang = useAsm ? "ASM" : "C++";
+            MessageBox.Show($"Czas wykonania {lang}: {watch.ElapsedMilliseconds} ms");
         }
 
         //Metoda obsługująca logikę wyboru DLL w C++
