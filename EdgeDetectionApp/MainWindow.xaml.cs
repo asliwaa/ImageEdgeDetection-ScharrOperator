@@ -1,31 +1,55 @@
-﻿using Microsoft.Win32;
+﻿/*
+ =================================================================================================
+ Project Topic:     Edge Detection in Image using Scharr Operator
+ Algorithm Desc:    WPF Window Application serving as a user interface for DLL libraries.
+                    Responsible for loading the image, preparing memory buffers,
+                    invoking external functions (C++/ASM), and presenting results.
+ 
+ Date:              sem. 5, 2024/25
+ Author:            Adam Śliwa
+ Version:           Final
+ =================================================================================================
+*/
+
+using Microsoft.Win32;
 using System;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Runtime.InteropServices;
 
 namespace EdgeDetectionApp
 {
+    /// <summary>
+    /// Main window class handling UI logic and DLL calls.
+    /// </summary>
     public partial class MainWindow : Window
     {
-        // DllImport dla C++
+        // Import function from C++ library
         [DllImport("EdgeDetectionCPP.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "ApplyScharrOperatorCpp")]
         public static extern void ApplyScharrOperatorCpp(IntPtr inputPtr, IntPtr outputPtr, int width, int height, int stride);
 
-        // DllImport dla ASM (zauważ nową nazwę DLL i funkcji)
+        // Import function from ASM library
         [DllImport("EdgeDetectionASM.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "ApplyScharrOperatorAsm")]
         public static extern void ApplyScharrOperatorAsm(IntPtr inputPtr, IntPtr outputPtr, int width, int height, int stride);
 
         public MainWindow()
         {
             InitializeComponent();
-            //Przycisk run ustawiony domyślnie na wyłączony
+            // Run button and algorihm choice buttons are disaled by defalut (no image loaded yet)
             btnRun.IsEnabled = false;
+            rdBtnCpp.IsEnabled = false;
+            rdBtnAsm.IsEnabled = false;
         }
 
-        //Metoda obsługująca logikę działania przycisku ładowania obrazu do przetworzenia
+        /*
+         * Method: btnImageUpload_Click
+         * Desc: Event handler for "Upload Image" button click. Opens a file dialog and displays the image.
+         * 
+         * Input params:
+         *   sender - object that runs the event.
+         *   e - event arguments.
+         */
         private void btnImageUpload_Click(object sender, RoutedEventArgs e)
         {
             OpenFileDialog fileDialog = new OpenFileDialog();
@@ -33,125 +57,105 @@ namespace EdgeDetectionApp
 
             if (fileDialog.ShowDialog() == true)
             {
-                //Załadowanie oryginalnego obrazu na ekran użytkownika
+                //Load an image for display
                 BitmapImage tempBitmap = new BitmapImage(new Uri(fileDialog.FileName));
                 imgUploaded.Source = tempBitmap;
 
-                //Czyszczenie klasy image i zmiennej przechowującej przetworzony obraz (konieczne zwłaszcza jeżeli wcześniej już przetwarzaliśmy jakiś obraz)
+                //Clear previous result
                 imgConverted.Source = null;
 
-                //Aktywacja przycisków wyboru biblioteki DLL
+                //Enable UI controls
                 rdBtnCpp.IsEnabled = true;
                 rdBtnAsm.IsEnabled = true;
-
-                //Sprawdzenie czy można już uruchomić (jeśli user wcześniej zaznaczył radio button)
                 CheckRunButton();
             }
         }
 
-        //Metoda obsługująca logikę działania przycisku uruchomienia przetwarzania obrazu
-        private void btnRun_Click(object sender, RoutedEventArgs e)
-        {
-            if (rdBtnCpp.IsChecked == true) RunAlgorithm(false); // C++
-            else if (rdBtnAsm.IsChecked == true) RunAlgorithm(true); // ASM
-        }
-
-        //Metoda obsługująca logikę przesłania obrazu do DLL w C++, odebrania przetworzonych danych i wyświetlenia gotowego obrazu
+        /*
+         * Method: RunAlgorithm
+         * Desc: Prepares memory and executes the selected algorithm (C++ or ASM). Uses the "Caller Allocates" pattern - buffers are allocated in C#.
+         * 
+         * Input params:
+         *   useAsm - algorithm selection flag: true = ASM, false = C++.
+         */
         private void RunAlgorithm(bool useAsm)
         {
             if (imgUploaded.Source is not BitmapImage originalImage) return;
 
-            // 1. Przygotowanie WEJŚCIA (Input)
-            // Konwertujemy oryginał na Bgr24
+            //Converting image format to Bgr24 (3 bytes per pixel),
+            //because C++/ASM algorithms operate on raw RGB bytes.
             FormatConvertedBitmap converter = new FormatConvertedBitmap();
             converter.BeginInit();
             converter.Source = originalImage;
             converter.DestinationFormat = PixelFormats.Bgr24;
             converter.EndInit();
 
-            // InputBitmap - z tego czytamy
+            //Create Input Bitmap with pointer access
             WriteableBitmap inputBitmap = new WriteableBitmap(converter);
 
-            // 2. Przygotowanie WYJŚCIA (Output)
-            // Tworzymy pustą bitmapę o tych samych wymiarach
+            //Create empty Output Bitmap
             WriteableBitmap outputBitmap = new WriteableBitmap(
                 inputBitmap.PixelWidth,
                 inputBitmap.PixelHeight,
                 inputBitmap.DpiX,
                 inputBitmap.DpiY,
                 PixelFormats.Bgr24,
-                null); // null = pusta
+                null);
 
-            // 3. Blokada pamięci obu obrazów
+            //Memory lock - prevents Garbage Collector from moving buffers in memory during DLL execution.
             inputBitmap.Lock();
             outputBitmap.Lock();
 
-            // Dane do przekazania
+            //Retrieve pointers and parameters
             IntPtr inPtr = inputBitmap.BackBuffer;
             IntPtr outPtr = outputBitmap.BackBuffer;
             int w = inputBitmap.PixelWidth;
             int h = inputBitmap.PixelHeight;
-            int stride = inputBitmap.BackBufferStride;
+            int stride = inputBitmap.BackBufferStride; //Stride includes padding
 
-            // 4. Wykonanie (Mierzymy czas)
+            //Measure time and Execute
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
-            if (useAsm)
+            //Finally try running the algorithm
+            try
             {
-                try
-                {
+                if (useAsm)
                     ApplyScharrOperatorAsm(inPtr, outPtr, w, h, stride);
-                }
-                catch (DllNotFoundException)
-                {
-                    MessageBox.Show("Nie znaleziono pliku EdgeDetectionASM.dll!");
-                }
+                else
+                    ApplyScharrOperatorCpp(inPtr, outPtr, w, h, stride);
             }
-            else
+            catch (Exception ex)
             {
-                ApplyScharrOperatorCpp(inPtr, outPtr, w, h, stride);
+                MessageBox.Show("Library execution error: " + ex.Message);
             }
 
             watch.Stop();
 
-            // 5. Sprzątanie
-            // Oznaczamy output jako zmieniony, żeby WPF go odświeżył
+            //Unlock and refresh bitmap
             outputBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
             inputBitmap.Unlock();
             outputBitmap.Unlock();
 
-            // Przypisanie wyniku
+            //Display result
             imgConverted.Source = outputBitmap;
 
-            // Informacja o czasie
             string lang = useAsm ? "ASM" : "C++";
-            MessageBox.Show($"Czas wykonania {lang}: {watch.ElapsedMilliseconds} ms");
+            MessageBox.Show($"Execution time {lang}: {watch.ElapsedMilliseconds} ms");
         }
 
-        //Metoda obsługująca logikę wyboru DLL w C++
-        private void rdBtnCpp_Click(object sender, RoutedEventArgs e)
+        private void btnRun_Click(object sender, RoutedEventArgs e)
         {
-            CheckRunButton();
+            if (rdBtnCpp.IsChecked == true) RunAlgorithm(false);
+            else if (rdBtnAsm.IsChecked == true) RunAlgorithm(true);
         }
 
-        //Metoda obsługująca logikę wyboru DLL w asm
+        private void rdBtnCpp_Click(object sender, RoutedEventArgs e) { CheckRunButton(); }
+        private void rdBtnAsm_Click(object sender, RoutedEventArgs e) { CheckRunButton(); }
 
-        private void rdBtnAsm_Click(object sender, RoutedEventArgs e)
-        {
-            CheckRunButton();
-        }
-
-        //Metoda sprawdzająca czy można pozwolić użytkownikowi uruchomić algorytm
         private void CheckRunButton()
         {
-            // Logika: Run aktywny <=> (MamyObrazek AND WybranoAlgorytm)
-            btnRun.IsEnabled = (imgUploaded.Source != null) && IsAnyAlgorithmSelected();
-        }
-
-        //Metoda sprawdzająca czy użytkownik wybrał jakikolwiek algorytm C++ lub ASM
-        private bool IsAnyAlgorithmSelected()
-        {
-            return (rdBtnCpp.IsChecked == true || rdBtnAsm.IsChecked == true);
+            btnRun.IsEnabled = (imgUploaded.Source != null) &&
+                               (rdBtnCpp.IsChecked == true || rdBtnAsm.IsChecked == true);
         }
     }
 }

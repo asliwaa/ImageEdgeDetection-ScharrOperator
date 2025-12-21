@@ -1,138 +1,154 @@
+; =================================================================================================
+; Project Topic:     Edge Detection in Image using Scharr Operator
+; Algorithm Desc:    Convolution algorithm using two 3x3 kernels (Gx, Gy) to calculate
+;                    horizontal and vertical gradients. The result (magnitude) is the
+;                    square root of the sum of squared gradients, normalized (divided by 8),
+;                    and clamped to the 0-255 range.
+;
+; Date:              sem. 5, 2024/25
+; Author:            Adam Œliwa
+; Version:           Final
+; =================================================================================================
+
 .code
 
-; ==============================================================================
-; Procedura: ApplyScharrOperatorAsm
-; Wersja: INLINED (Bez wywo³añ call w pêtli) + Sliding Window
-; ==============================================================================
+; =================================================================================================
+; Procedure: ApplyScharrOperatorAsm
+; Desc: Main procedure processing the image. Implements the Scharr operator
+;       using SSE2 vector instructions (for square root calculation)
+;       and "Sliding Window" optimization for pointer management.
+;
+; Input params:
+;   RCX - pointer to the input image buffer (B, G, R, ...).
+;   RDX - pointer to the output image buffer.
+;   R8 - image width in pixels.
+;   R9 - image height in pixels.
+;   [RBP + 48] - stride, the actual row width in bytes (including padding).
+;
+; Output params:
+;   None (result is written directly to the memory pointed to by RDX).
+;
+; Modified Registers:
+;   Volatile:      RAX, RCX, RDX, R8, R9, R10, R11, XMM0, XMM1.
+;   Preserved:     RBX, RSI, RDI, R12, R13, R14, R15, RBP, RSP (saved/restored per x64 ABI).
+;   Flags:         ZF, SF, OF, CF, PF, AF (modified by arithmetic instructions).
+; =================================================================================================
 
 ApplyScharrOperatorAsm proc
 
-    ; --- 1. PROLOG (Rêczne zarz¹dzanie stosem) ---
-    push rbp
-    mov rbp, rsp
+    ; --- 1. PROLOG (Preserve Registers) ---
+    push rbp                            ; Save old base pointer
+    mov rbp, rsp                        ; Set new base pointer
     
-    ; Zapisujemy rejestry, których bêdziemy u¿ywaæ (Non-volatile)
-    push rbx
-    push rsi
-    push rdi
-    push r12
-    push r13
-    push r14
-    push r15
+    ; Save "Non-volatile" registers that must be preserved across the call
+    push rbx                            ; General purpose (used for Y counter)
+    push rsi                            ; Source Index (used for X counter)
+    push rdi                            ; Destination Index (used for pixel offset)
+    push r12                            ; Pointer: Top Row
+    push r13                            ; Pointer: Middle Row
+    push r14                            ; Pointer: Bottom Row
+    push r15                            ; Pointer: Output Row
 
-    ; --- 2. POBRANIE DANYCH ---
-    ; RCX = InputPtr
-    ; RDX = OutputPtr
-    ; R8  = Width
-    ; R9  = Height
-    ; [rbp + 48] = Stride (5. argument, le¿y na stosie nad Shadow Space)
+    ; --- 2. RETRIEVE DATA FROM STACK ---
+    ; The 'stride' parameter is located on the stack above Shadow Space + Ret Addr + RBP
+    movsxd r10, dword ptr [rbp + 48]    ; Load Stride with sign extension to 64-bit
+
+    ; --- 3. DATA VALIDATION ---
+    cmp r8, 3                           ; Check if width < 3
+    jl Done                             ; If yes, exit (image too small for 3x3 filter)
+    cmp r9, 3                           ; Check if height < 3
+    jl Done                             ; If yes, exit
+
+    ; --- 4. POINTER INITIALIZATION (SLIDING WINDOW) ---
+    ; Set pointers to the start of the first 3x3 block
+    mov r12, rcx                        ; R12 = Address of Row 0 (Input)
     
-    ; Pobieramy Stride jako liczbê 32-bit ze znakiem i rozszerzamy do 64-bit
-    movsxd r10, dword ptr [rbp + 48] 
-
-    ; Sprawdzenie wymiarów (min 3x3)
-    cmp r8, 3
-    jl Done
-    cmp r9, 3
-    jl Done
-
-    ; --- 3. PRZYGOTOWANIE WSKANIKÓW (Sliding Window) ---
-    ; R12 = Wiersz Górny (Input)
-    mov r12, rcx
+    mov r13, rcx                        ; Copy base address
+    add r13, r10                        ; R13 = Address of Row 1 (Input) = Base + Stride
     
-    ; R13 = Wiersz Œrodkowy (Input)
-    mov r13, rcx
-    add r13, r10
-    
-    ; R14 = Wiersz Dolny (Input)
-    mov r14, rcx
-    add r14, r10
-    add r14, r10
+    mov r14, rcx                        ; Copy base address
+    add r14, r10                        ; Add one stride
+    add r14, r10                        ; R14 = Address of Row 2 (Input) = Base + 2*Stride
 
-    ; R15 = Wiersz Wyjœciowy (Output - œrodek)
-    mov r15, rdx
-    add r15, r10
+    mov r15, rdx                        ; Output buffer address
+    add r15, r10                        ; R15 = Address of Row 1 (Output) - writing to the middle
 
-    ; Licznik pêtli Y (Height - 2)
-    mov rbx, r9
-    sub rbx, 2
-    cmp rbx, 0
-    jle Done
+    ; Initialize vertical loop counter (Y)
+    mov rbx, r9                         ; Load Height into RBX
+    sub rbx, 2                          ; Subtract 2 (skip top and bottom borders)
+    cmp rbx, 0                          ; Check if there are rows to process
+    jle Done                            ; If not, jump to Done
 
-    ; Szerokoœæ - 1 (do pêtli X)
-    dec r8
+    dec r8                              ; Decrease Width by 1 (X loop boundary)
 
+    ; --- 5. MAIN PROCESSING LOOP ---
 LoopY:
-    ; RSI = Licznik X (zaczynamy od 1)
-    mov rsi, 1
+    mov rsi, 1                          ; Set X counter to 1 (skip first column)
 
 LoopX:
-    cmp rsi, r8         ; Czy x >= Width - 1?
-    jge NextLine
+    cmp rsi, r8                         ; Compare X with (Width - 1)
+    jge NextLine                        ; If end of row, go to next line
 
-    ; RDI = Offset piksela (x * 3)
-    mov rdi, rsi
-    lea rdi, [rdi + rdi*2] ; Szybkie mno¿enie przez 3 (rdi = rdi + 2*rdi)
+    ; Calculate pixel offset in bytes (BGR format = 3 bytes per pixel)
+    mov rdi, rsi                        ; Copy X to RDI
+    lea rdi, [rdi + rdi*2]              ; RDI = RDI * 3 (fast multiplication: x + 2x)
 
-    ; Zerujemy sumy
-    xor r11d, r11d      ; SumX (u¿ywamy R11D jako akumulatora)
-    xor ecx, ecx        ; SumY (u¿ywamy ECX jako akumulatora)
+    ; Zero out gradient accumulators
+    xor r11d, r11d                      ; R11D = Sum X (Horizontal Gradient) = 0
+    xor ecx, ecx                        ; ECX  = Sum Y (Vertical Gradient) = 0
 
-    ; ==========================================================
-    ; BLOK OBLICZEÑ (INLINED)
-    ; Zamiast "call", kod jest tutaj.
-    ; U¿ywamy EAX jako tymczasowego rejestru na jasnoœæ.
-    ; ==========================================================
+    ; =========================================================================
+    ; SCHARR GRADIENT CALCULATION (Convolution)
+    ; =========================================================================
 
-    ; --- WIERSZ GÓRNY (R12) ---
+    ; --- TOP ROW (Pointed by R12) ---
     
-    ; Lewy (-1): GX=-3, GY=-3
-    ; Pobranie piksela [R12 + RDI - 3]
-    movzx eax, byte ptr [r12 + rdi - 3]     ; B
-    movzx edx, byte ptr [r12 + rdi - 2]     ; G
-    add eax, edx
-    movzx edx, byte ptr [r12 + rdi - 1]     ; R
-    add eax, edx
-    imul eax, 0AAABh                        ; Dzielenie przez 3
-    shr eax, 17                             ; EAX = Jasnoœæ
+    ; Top-Left Pixel [x-1]: Weights Gx=-3, Gy=-3
+    movzx eax, byte ptr [r12 + rdi - 3] ; Load Blue
+    movzx edx, byte ptr [r12 + rdi - 2] ; Load Green
+    add eax, edx                        ; Sum B+G
+    movzx edx, byte ptr [r12 + rdi - 1] ; Load Red
+    add eax, edx                        ; Sum B+G+R
+    imul eax, 0AAABh                    ; Multiply by reciprocal (approx. division by 3)
+    shr eax, 17                         ; Bitwise shift (EAX = Pixel Brightness)
     
-    sub r11d, eax ; SumX -= 1x
-    sub r11d, eax ; -2x
-    sub r11d, eax ; -3x
-    sub ecx, eax  ; SumY -= 3x
+    sub r11d, eax                       ; SumX -= 1 * Brightness
+    sub r11d, eax                       ; SumX -= 2 * Brightness
+    sub r11d, eax                       ; SumX -= 3 * Brightness (Gx = -3)
+    sub ecx, eax                        ; SumY -= 3 * Brightness (Gy = -3)
 
-    ; Œrodkowy (0): GX=0, GY=-10
-    movzx eax, byte ptr [r12 + rdi]
-    movzx edx, byte ptr [r12 + rdi + 1]
-    add eax, edx
-    movzx edx, byte ptr [r12 + rdi + 2]
-    add eax, edx
-    imul eax, 0AAABh
-    shr eax, 17
+    ; Top-Center Pixel [x]: Weights Gx=0, Gy=-10
+    movzx eax, byte ptr [r12 + rdi]     ; Load B
+    movzx edx, byte ptr [r12 + rdi + 1] ; Load G
+    add eax, edx                        ; Sum
+    movzx edx, byte ptr [r12 + rdi + 2] ; Load R
+    add eax, edx                        ; Sum
+    imul eax, 0AAABh                    ; Approx. division by 3
+    shr eax, 17                         ; EAX = Brightness
     
-    imul eax, 10
-    sub ecx, eax  ; SumY -= 10x
+    imul eax, 10                        ; Multiply brightness by weight 10
+    sub ecx, eax                        ; SumY -= 10 * Brightness (Gy = -10)
 
-    ; Prawy (+1): GX=+3, GY=-3
-    movzx eax, byte ptr [r12 + rdi + 3]
-    movzx edx, byte ptr [r12 + rdi + 4]
-    add eax, edx
-    movzx edx, byte ptr [r12 + rdi + 5]
-    add eax, edx
-    imul eax, 0AAABh
-    shr eax, 17
+    ; Top-Right Pixel [x+1]: Weights Gx=+3, Gy=-3
+    movzx eax, byte ptr [r12 + rdi + 3] ; Load B
+    movzx edx, byte ptr [r12 + rdi + 4] ; Load G
+    add eax, edx                        ; Sum
+    movzx edx, byte ptr [r12 + rdi + 5] ; Load R
+    add eax, edx                        ; Sum
+    imul eax, 0AAABh                    ; Division by 3
+    shr eax, 17                         ; EAX = Brightness
     
-    add r11d, eax ; SumX += 1x
-    add r11d, eax ; +2x
-    add r11d, eax ; +3x
-    sub ecx, eax  ; SumY -= 1x
-    sub ecx, eax  ; -2x
-    sub ecx, eax  ; -3x
+    add r11d, eax                       ; SumX += 1 * Brightness
+    add r11d, eax                       ; SumX += 2 * Brightness
+    add r11d, eax                       ; SumX += 3 * Brightness (Gx = +3)
+    sub ecx, eax                        ; SumY -= 1 * Brightness
+    sub ecx, eax                        ; SumY -= 2 * Brightness
+    sub ecx, eax                        ; SumY -= 3 * Brightness (Gy = -3)
 
-    ; --- WIERSZ ŒRODKOWY (R13) ---
+    ; --- MIDDLE ROW (Pointed by R13) ---
 
-    ; Lewy (-1): GX=-10, GY=0
-    movzx eax, byte ptr [r13 + rdi - 3]
+    ; Middle-Left Pixel [x-1]: Weights Gx=-10, Gy=0
+    movzx eax, byte ptr [r13 + rdi - 3] ; Retrieve and calculate brightness
     movzx edx, byte ptr [r13 + rdi - 2]
     add eax, edx
     movzx edx, byte ptr [r13 + rdi - 1]
@@ -140,11 +156,11 @@ LoopX:
     imul eax, 0AAABh
     shr eax, 17
     
-    imul eax, 10
-    sub r11d, eax ; SumX -= 10x
+    imul eax, 10                        ; Weight 10
+    sub r11d, eax                       ; SumX -= 10 * Brightness (Gx = -10)
 
-    ; Prawy (+1): GX=+10, GY=0
-    movzx eax, byte ptr [r13 + rdi + 3]
+    ; Middle-Right Pixel [x+1]: Weights Gx=+10, Gy=0
+    movzx eax, byte ptr [r13 + rdi + 3] ; Retrieve and calculate brightness
     movzx edx, byte ptr [r13 + rdi + 4]
     add eax, edx
     movzx edx, byte ptr [r13 + rdi + 5]
@@ -152,13 +168,13 @@ LoopX:
     imul eax, 0AAABh
     shr eax, 17
     
-    imul eax, 10
-    add r11d, eax ; SumX += 10x
+    imul eax, 10                        ; Weight 10
+    add r11d, eax                       ; SumX += 10 * Brightness (Gx = +10)
 
-    ; --- WIERSZ DOLNY (R14) ---
+    ; --- BOTTOM ROW (Pointed by R14) ---
 
-    ; Lewy (-1): GX=-3, GY=+3
-    movzx eax, byte ptr [r14 + rdi - 3]
+    ; Bottom-Left Pixel [x-1]: Weights Gx=-3, Gy=+3
+    movzx eax, byte ptr [r14 + rdi - 3] ; Retrieve and calculate brightness
     movzx edx, byte ptr [r14 + rdi - 2]
     add eax, edx
     movzx edx, byte ptr [r14 + rdi - 1]
@@ -166,15 +182,15 @@ LoopX:
     imul eax, 0AAABh
     shr eax, 17
     
-    sub r11d, eax ; SumX -= 3x
+    sub r11d, eax                       ; SumX -= 3 * Brightness (Gx = -3)
     sub r11d, eax
     sub r11d, eax
-    add ecx, eax  ; SumY += 3x
+    add ecx, eax                        ; SumY += 3 * Brightness (Gy = +3)
     add ecx, eax
     add ecx, eax
 
-    ; Œrodkowy (0): GX=0, GY=+10
-    movzx eax, byte ptr [r14 + rdi]
+    ; Bottom-Center Pixel [x]: Weights Gx=0, Gy=+10
+    movzx eax, byte ptr [r14 + rdi]     ; Retrieve and calculate brightness
     movzx edx, byte ptr [r14 + rdi + 1]
     add eax, edx
     movzx edx, byte ptr [r14 + rdi + 2]
@@ -182,11 +198,11 @@ LoopX:
     imul eax, 0AAABh
     shr eax, 17
     
-    imul eax, 10
-    add ecx, eax  ; SumY += 10x
+    imul eax, 10                        ; Weight 10
+    add ecx, eax                        ; SumY += 10 * Brightness (Gy = +10)
 
-    ; Prawy (+1): GX=+3, GY=+3
-    movzx eax, byte ptr [r14 + rdi + 3]
+    ; Bottom-Right Pixel [x+1]: Weights Gx=+3, Gy=+3
+    movzx eax, byte ptr [r14 + rdi + 3] ; Retrieve and calculate brightness
     movzx edx, byte ptr [r14 + rdi + 4]
     add eax, edx
     movzx edx, byte ptr [r14 + rdi + 5]
@@ -194,67 +210,72 @@ LoopX:
     imul eax, 0AAABh
     shr eax, 17
     
-    add r11d, eax ; SumX += 3x
+    add r11d, eax                       ; SumX += 3 * Brightness (Gx = +3)
     add r11d, eax
     add r11d, eax
-    add ecx, eax  ; SumY += 3x
+    add ecx, eax                        ; SumY += 3 * Brightness (Gy = +3)
     add ecx, eax
     add ecx, eax
 
-    ; --- MAGNITUDA (SSE) ---
-    cvtsi2ss xmm0, r11d ; SumX -> float
-    mulss xmm0, xmm0    ; ^2
-    cvtsi2ss xmm1, ecx  ; SumY -> float
-    mulss xmm1, xmm1    ; ^2
-    addss xmm0, xmm1    ; Sum^2
-    sqrtss xmm0, xmm0   ; Sqrt
-    cvtss2si eax, xmm0  ; -> int
+    ; --- 6. MAGNITUDE CALCULATION (SSE) ---
+    cvtsi2ss xmm0, r11d                 ; Convert SumX (int) to float (XMM0)
+    mulss xmm0, xmm0                    ; XMM0 = SumX * SumX (Squared)
+    
+    cvtsi2ss xmm1, ecx                  ; Convert SumY (int) to float (XMM1)
+    mulss xmm1, xmm1                    ; XMM1 = SumY * SumY (Squared)
+    
+    addss xmm0, xmm1                    ; XMM0 = SumX^2 + SumY^2
+    sqrtss xmm0, xmm0                   ; XMM0 = Square Root (Magnitude)
+    
+    cvtss2si eax, xmm0                  ; Convert float result back to int (EAX)
 
-    ; Clamping (Przyciêcie do 0-255)
-    cmp eax, 255
-    jg SetMax
-    cmp eax, 0
-    jl SetMin
-    jmp SavePixel
+    ; --- 7. NORMALIZATION AND CLAMPING ---
+    sar eax, 3                          ; Division by 8 (Bitwise shift right) - Brightness normalization
+
+    ; Clamping (Clip value to 0-255 range)
+    cmp eax, 255                        ; Compare with 255
+    jg SetMax                           ; If > 255, jump to SetMax
+    cmp eax, 0                          ; Compare with 0
+    jl SetMin                           ; If < 0, jump to SetMin
+    jmp SavePixel                       ; If ok, proceed to save
 SetMax:
-    mov eax, 255
+    mov eax, 255                        ; Set value to 255
     jmp SavePixel
 SetMin:
-    xor eax, eax
+    xor eax, eax                        ; Set value to 0
 
 SavePixel:
-    ; Zapisz wynik (B, G, R)
-    ; R15 = WskaŸnik wyjœciowy wiersza, RDI = Offset
-    mov [r15 + rdi], al
-    mov [r15 + rdi + 1], al
-    mov [r15 + rdi + 2], al
+    ; --- 8. STORE RESULT ---
+    ; Save the same grayscale value to 3 channels (B, G, R)
+    mov [r15 + rdi], al                 ; Store Blue
+    mov [r15 + rdi + 1], al             ; Store Green
+    mov [r15 + rdi + 2], al             ; Store Red
 
-    ; Nastêpny piksel
-    inc rsi
-    jmp LoopX
+    inc rsi                             ; Increment X counter (next pixel)
+    jmp LoopX                           ; Jump to start of X loop
 
 NextLine:
-    ; Przesuwamy okno o jeden wiersz w dó³
-    add r12, r10
-    add r13, r10
-    add r14, r10
-    add r15, r10
+    ; --- 9. SLIDE WINDOW (Update Pointers) ---
+    add r12, r10                        ; Move 'Top' pointer one row down
+    add r13, r10                        ; Move 'Middle' pointer one row down
+    add r14, r10                        ; Move 'Bottom' pointer one row down
+    add r15, r10                        ; Move 'Output' pointer one row down
     
-    dec rbx
-    cmp rbx, 0
-    jg LoopY
+    dec rbx                             ; Decrement Y counter
+    cmp rbx, 0                          ; Check if end of image
+    jg LoopY                            ; If not, jump to start of Y loop
 
 Done:
-    ; --- EPILOG ---
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rbp
-    ret
+    ; --- 10. EPILOG (Restore Registers) ---
+    pop r15                             ; Restore R15
+    pop r14                             ; Restore R14
+    pop r13                             ; Restore R13
+    pop r12                             ; Restore R12
+    pop rdi                             ; Restore RDI
+    pop rsi                             ; Restore RSI
+    pop rbx                             ; Restore RBX
+    pop rbp                             ; Restore RBP
+    ret                                 ; Return from procedure
 
 ApplyScharrOperatorAsm endp
 end
