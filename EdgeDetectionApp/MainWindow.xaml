@@ -1,66 +1,58 @@
 ﻿<Window x:Class="EdgeDetectionApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:EdgeDetectionApp"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="500" Width="800">
+        Title="Edge Detection Project - Scharr Operator" Height="600" Width="900"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize">
 
-    <Grid>
-        <!-- Background color-->
-        <Rectangle Fill="LightGray" />
-        <!-- App title -->
-        <Label Content="Edge Detection - Scharr filter" FontSize="25" HorizontalAlignment="Center" Margin="0,10,0,0" 
-               VerticalAlignment="Top" Width="333"/>
-        <!-- Upload image button -->
-        <Button Name="btnImageUpload" 
-                Content="Upload image" FontSize="20" Width="150" Height="41" 
-                HorizontalAlignment="Center" Margin="0,58,0,0" VerticalAlignment="Top"
-                Click="btnImageUpload_Click"/>
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
-        <!-- Place for the uploaded image -->
-        <Border BorderBrush="Black" BorderThickness="2"
-        HorizontalAlignment="Left" VerticalAlignment="Top"
-        Width="256" Height="246" Margin="50,123,0,0">
-            <Image Name="imgUploaded" Stretch="Uniform"/>
-        </Border>
+        <StackPanel Grid.Row="0" Orientation="Vertical" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="5">
+                <Button Name="btnImageUpload" Content="Upload Image" Width="120" Height="30" Click="btnImageUpload_Click" Margin="5"/>
 
-        <!-- Place for the converted image -->
-        <Border BorderBrush="Black" BorderThickness="2"
-        HorizontalAlignment="Left" VerticalAlignment="Top"
-        Width="256" Height="246" Margin="480,123,0,0">
-            <Image Name="imgConverted" Stretch="Uniform"/>
-        </Border>
+                <GroupBox Header="Library Selection" Margin="10,0">
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton Name="rdBtnCpp" Content="C++ DLL" IsChecked="True" VerticalAlignment="Center" Margin="5" Click="rdBtnCpp_Click" IsEnabled="False"/>
+                        <RadioButton Name="rdBtnAsm" Content="ASM DLL" VerticalAlignment="Center" Margin="5" Click="rdBtnAsm_Click" IsEnabled="False"/>
+                    </StackPanel>
+                </GroupBox>
 
+                <Button Name="btnRun" Content="Run Algorithm" Width="120" Height="30" Click="btnRun_Click" IsEnabled="False" Margin="5"/>
+            </StackPanel>
 
-        <!-- Run algorithm button -->
-        <Button Name="btnRun" 
-                Content="Run algorithm" FontSize="18"
-                Margin="0,158,0,0" Height="33" Width="128"
-                HorizontalAlignment="Center"  VerticalAlignment="Top"
-                IsEnabled="False"
-                Click="btnRun_Click"/>
-        
-        <!-- Choose DLL label -->
-        <Label Name="lblChoice" Content="Choose DLL"
-               FontSize="16" Margin="0,216,0,0"
-               HorizontalAlignment="Center" VerticalAlignment="Top"/>
-        <!-- Radio button to pick C++ DLL for edge detection -->
-        <Label Content="C++" FontSize="17" HorizontalAlignment="Left" Margin="384,238,0,0" VerticalAlignment="Top"/>
-        <RadioButton Name="rdBtnCpp" 
-                     Margin="366,247,0,0" 
-                     HorizontalAlignment="Left"  VerticalAlignment="Top"
-                     Click="rdBtnCpp_Click"/>
-        <!-- Radio button to pick ASM DLL for edge detection -->
-        <Label Content="ASM" FontSize="16" HorizontalAlignment="Left" Margin="384,261,0,0" VerticalAlignment="Top" RenderTransformOrigin="0.275,0.497"/>
-        <RadioButton Name="rdBtnAsm" 
-                     Margin="366,271,0,0" 
-                     HorizontalAlignment="Left" VerticalAlignment="Top"
-                     Click="rdBtnAsm_Click"/>
+            <GroupBox Header="Multi-threading Settings" HorizontalAlignment="Center" Margin="5">
+                <StackPanel Orientation="Horizontal" Margin="5">
+                    <TextBlock Text="Threads:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <Slider Name="sliderThreads" Minimum="1" Maximum="64" Value="1" Width="200" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="sliderThreads_ValueChanged"/>
+                    <Label Name="lblThreads" Content="1" Width="40" VerticalContentAlignment="Center" FontWeight="Bold"/>
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
 
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
+            <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" Margin="5">
+                <Image Name="imgUploaded" Stretch="Uniform"/>
+            </Border>
 
+            <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="1" Margin="5">
+                <Image Name="imgConverted" Stretch="Uniform"/>
+            </Border>
+        </Grid>
 
+        <StatusBar Grid.Row="2" Height="30">
+            <StatusBarItem>
+                <TextBlock Name="lblStatus" Text="Ready" FontWeight="SemiBold"/>
+            </StatusBarItem>
+        </StatusBar>
     </Grid>
 </Window>
