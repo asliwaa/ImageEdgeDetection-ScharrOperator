@@ -64,7 +64,7 @@ The Scharr operator is an improved version of the Sobel operator, offering bette
  -3   0   3
 -10   0  10
  -3   0   3
-
+```
 **Gy (Vertical Derivative):**
 ```text
  -3 -10  -3
