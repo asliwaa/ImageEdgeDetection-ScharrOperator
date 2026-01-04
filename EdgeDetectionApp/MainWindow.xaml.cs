@@ -156,6 +156,7 @@ namespace EdgeDetectionApp
             }
 
             watch.Stop();
+            double timeSeconds = watch.Elapsed.TotalSeconds;
 
             outputBitmap.AddDirtyRect(new Int32Rect(0, 0, width, height));
             inputBitmap.Unlock();
@@ -164,7 +165,7 @@ namespace EdgeDetectionApp
             imgConverted.Source = outputBitmap;
 
             string lang = useAsm ? "ASM" : "C++";
-            lblStatus.Text = $"Done. Mode: {lang} | Threads: {threadsCount} | Time: {watch.ElapsedMilliseconds} ms";
+            lblStatus.Text = $"Done. Mode: {lang} | Threads: {threadsCount} | Time: {timeSeconds:F4} s";
         }
 
         /*
