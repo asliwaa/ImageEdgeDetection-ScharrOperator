@@ -2,8 +2,6 @@
 
 A WPF desktop application project demonstrating edge detection using the **Scharr Operator**. The main goal of this project is to benchmark the performance of two implementations of the same algorithm: a high-level C++ implementation and a low-level x64 Assembly implementation using SSE vector instructions.
 
-**New in v2.0:** The project now supports **Multi-threading**, allowing users to analyze performance scaling across multiple CPU cores.
-
 ## Project Structure
 
 The solution consists of three main modules:
@@ -66,7 +64,7 @@ The Scharr operator is an improved version of the Sobel operator, offering bette
  -3   0   3
 -10   0  10
  -3   0   3
-
+```
 **Gy (Vertical Derivative):**
 ```text
  -3 -10  -3
